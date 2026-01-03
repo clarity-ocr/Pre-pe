@@ -1,12 +1,29 @@
 /**
  * Wallet Service - Handles wallet operations
- * 
- * This service manages user wallet balance, locking, and transactions.
- * Wallet operations are stored in the database for audit trail.
+ * Uses explicit types since DB types may not be synced yet
  */
 
 import { supabase } from '@/integrations/supabase/client';
-import type { Wallet, WalletLedger } from '@/types/recharge.types';
+
+interface WalletRow {
+  id: string;
+  user_id: string;
+  balance: number;
+  locked_balance: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface WalletLedgerRow {
+  id: string;
+  wallet_id: string;
+  transaction_id: string | null;
+  type: string;
+  amount: number;
+  balance_after: number;
+  description: string;
+  created_at: string;
+}
 
 /**
  * Get wallet balance for a user
@@ -16,39 +33,35 @@ export async function getWalletBalance(userId: string): Promise<{
   locked_balance: number;
 } | null> {
   const { data, error } = await supabase
-    .from('wallets')
+    .from('wallets' as never)
     .select('balance, locked_balance')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
   
-  if (error) {
+  if (error || !data) {
     console.error('Error fetching wallet:', error);
     return null;
   }
   
-  return data;
+  const wallet = data as unknown as WalletRow;
+  return { balance: Number(wallet.balance), locked_balance: Number(wallet.locked_balance) };
 }
 
 /**
- * Create a wallet for a new user
+ * Get full wallet for a user
  */
-export async function createWallet(userId: string): Promise<Wallet | null> {
+export async function getWallet(userId: string): Promise<WalletRow | null> {
   const { data, error } = await supabase
-    .from('wallets')
-    .insert({
-      user_id: userId,
-      balance: 0,
-      locked_balance: 0,
-    })
-    .select()
-    .single();
+    .from('wallets' as never)
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle();
   
-  if (error) {
-    console.error('Error creating wallet:', error);
+  if (error || !data) {
     return null;
   }
   
-  return data as Wallet;
+  return data as unknown as WalletRow;
 }
 
 /**
@@ -59,32 +72,26 @@ export async function lockAmount(
   amount: number,
   transactionId: string
 ): Promise<boolean> {
-  // Get current wallet
-  const { data: wallet, error: walletError } = await supabase
-    .from('wallets')
-    .select('*')
-    .eq('user_id', userId)
-    .single();
+  const wallet = await getWallet(userId);
   
-  if (walletError || !wallet) {
-    console.error('Wallet not found:', walletError);
+  if (!wallet) {
+    console.error('Wallet not found');
     return false;
   }
   
-  const availableBalance = wallet.balance - wallet.locked_balance;
+  const availableBalance = Number(wallet.balance) - Number(wallet.locked_balance);
   
   if (availableBalance < amount) {
     console.error('Insufficient balance');
     return false;
   }
   
-  // Lock the amount
   const { error: updateError } = await supabase
-    .from('wallets')
+    .from('wallets' as never)
     .update({
-      locked_balance: wallet.locked_balance + amount,
+      locked_balance: Number(wallet.locked_balance) + amount,
       updated_at: new Date().toISOString(),
-    })
+    } as never)
     .eq('user_id', userId);
   
   if (updateError) {
@@ -92,8 +99,7 @@ export async function lockAmount(
     return false;
   }
   
-  // Add ledger entry
-  await addLedgerEntry(wallet.id, transactionId, 'LOCK', amount, wallet.balance, `Amount locked for transaction ${transactionId}`);
+  await addLedgerEntry(wallet.id, transactionId, 'LOCK', amount, Number(wallet.balance), `Amount locked for transaction`);
   
   return true;
 }
@@ -106,27 +112,23 @@ export async function confirmDebit(
   amount: number,
   transactionId: string
 ): Promise<boolean> {
-  const { data: wallet, error: walletError } = await supabase
-    .from('wallets')
-    .select('*')
-    .eq('user_id', userId)
-    .single();
+  const wallet = await getWallet(userId);
   
-  if (walletError || !wallet) {
-    console.error('Wallet not found:', walletError);
+  if (!wallet) {
+    console.error('Wallet not found');
     return false;
   }
   
-  const newBalance = wallet.balance - amount;
-  const newLockedBalance = wallet.locked_balance - amount;
+  const newBalance = Number(wallet.balance) - amount;
+  const newLockedBalance = Number(wallet.locked_balance) - amount;
   
   const { error: updateError } = await supabase
-    .from('wallets')
+    .from('wallets' as never)
     .update({
       balance: newBalance,
       locked_balance: Math.max(0, newLockedBalance),
       updated_at: new Date().toISOString(),
-    })
+    } as never)
     .eq('user_id', userId);
   
   if (updateError) {
@@ -134,8 +136,7 @@ export async function confirmDebit(
     return false;
   }
   
-  // Add ledger entry
-  await addLedgerEntry(wallet.id, transactionId, 'DEBIT', amount, newBalance, `Debited for transaction ${transactionId}`);
+  await addLedgerEntry(wallet.id, transactionId, 'DEBIT', amount, newBalance, `Debited for transaction`);
   
   return true;
 }
@@ -148,25 +149,21 @@ export async function refundAmount(
   amount: number,
   transactionId: string
 ): Promise<boolean> {
-  const { data: wallet, error: walletError } = await supabase
-    .from('wallets')
-    .select('*')
-    .eq('user_id', userId)
-    .single();
+  const wallet = await getWallet(userId);
   
-  if (walletError || !wallet) {
-    console.error('Wallet not found:', walletError);
+  if (!wallet) {
+    console.error('Wallet not found');
     return false;
   }
   
-  const newLockedBalance = wallet.locked_balance - amount;
+  const newLockedBalance = Number(wallet.locked_balance) - amount;
   
   const { error: updateError } = await supabase
-    .from('wallets')
+    .from('wallets' as never)
     .update({
       locked_balance: Math.max(0, newLockedBalance),
       updated_at: new Date().toISOString(),
-    })
+    } as never)
     .eq('user_id', userId);
   
   if (updateError) {
@@ -174,8 +171,7 @@ export async function refundAmount(
     return false;
   }
   
-  // Add ledger entry
-  await addLedgerEntry(wallet.id, transactionId, 'UNLOCK', amount, wallet.balance, `Amount unlocked/refunded for failed transaction ${transactionId}`);
+  await addLedgerEntry(wallet.id, transactionId, 'UNLOCK', amount, Number(wallet.balance), `Amount unlocked/refunded`);
   
   return true;
 }
@@ -188,25 +184,21 @@ export async function creditWallet(
   amount: number,
   description: string
 ): Promise<boolean> {
-  const { data: wallet, error: walletError } = await supabase
-    .from('wallets')
-    .select('*')
-    .eq('user_id', userId)
-    .single();
+  const wallet = await getWallet(userId);
   
-  if (walletError || !wallet) {
-    console.error('Wallet not found:', walletError);
+  if (!wallet) {
+    console.error('Wallet not found');
     return false;
   }
   
-  const newBalance = wallet.balance + amount;
+  const newBalance = Number(wallet.balance) + amount;
   
   const { error: updateError } = await supabase
-    .from('wallets')
+    .from('wallets' as never)
     .update({
       balance: newBalance,
       updated_at: new Date().toISOString(),
-    })
+    } as never)
     .eq('user_id', userId);
   
   if (updateError) {
@@ -214,7 +206,6 @@ export async function creditWallet(
     return false;
   }
   
-  // Add ledger entry
   await addLedgerEntry(wallet.id, null, 'CREDIT', amount, newBalance, description);
   
   return true;
@@ -223,19 +214,15 @@ export async function creditWallet(
 /**
  * Get wallet ledger entries
  */
-export async function getWalletLedger(userId: string, limit = 50): Promise<WalletLedger[]> {
-  const { data: wallet, error: walletError } = await supabase
-    .from('wallets')
-    .select('id')
-    .eq('user_id', userId)
-    .single();
+export async function getWalletLedger(userId: string, limit = 50): Promise<WalletLedgerRow[]> {
+  const wallet = await getWallet(userId);
   
-  if (walletError || !wallet) {
+  if (!wallet) {
     return [];
   }
   
   const { data, error } = await supabase
-    .from('wallet_ledger')
+    .from('wallet_ledger' as never)
     .select('*')
     .eq('wallet_id', wallet.id)
     .order('created_at', { ascending: false })
@@ -246,7 +233,7 @@ export async function getWalletLedger(userId: string, limit = 50): Promise<Walle
     return [];
   }
   
-  return data as WalletLedger[];
+  return (data as unknown as WalletLedgerRow[]) || [];
 }
 
 /**
@@ -261,7 +248,7 @@ async function addLedgerEntry(
   description: string
 ): Promise<void> {
   const { error } = await supabase
-    .from('wallet_ledger')
+    .from('wallet_ledger' as never)
     .insert({
       wallet_id: walletId,
       transaction_id: transactionId,
@@ -269,7 +256,7 @@ async function addLedgerEntry(
       amount,
       balance_after: balanceAfter,
       description,
-    });
+    } as never);
   
   if (error) {
     console.error('Error adding ledger entry:', error);

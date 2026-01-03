@@ -1,22 +1,30 @@
 /**
  * Recharge Service - Core recharge processing logic
- * 
- * IMPORTANT: This service implements the complete recharge flow:
- * 1. Validate input
- * 2. Check wallet balance
- * 3. Lock amount
- * 4. Call Recharge API (placeholder)
- * 5. Handle SUCCESS/FAILED/PENDING
- * 6. Update transaction & wallet
- * 
- * When connecting to KwikApi:
- * - Only update the API call in processRechargeApi()
- * - No changes to business logic required
+ * Uses explicit types for DB operations
  */
 
 import { supabase } from '@/integrations/supabase/client';
 import type { RechargeRequest, ApiResponse, Transaction, BillDetails } from '@/types/recharge.types';
 import * as walletService from './wallet.service';
+
+interface TransactionRow {
+  id: string;
+  user_id: string;
+  type: string;
+  service_type: string;
+  amount: number;
+  status: string;
+  operator_id: string | null;
+  operator_name: string | null;
+  mobile_number: string | null;
+  dth_id: string | null;
+  reference_id: string | null;
+  api_transaction_id: string | null;
+  commission: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
 
 /**
  * Process a recharge request
@@ -67,7 +75,7 @@ export async function processRecharge(
   
   // Create transaction record
   const { data: transaction, error: txError } = await supabase
-    .from('transactions')
+    .from('transactions' as never)
     .insert({
       user_id: userId,
       type: 'RECHARGE',
@@ -78,7 +86,7 @@ export async function processRecharge(
       mobile_number: request.mobile_number,
       dth_id: request.dth_id,
       metadata: { plan_id: request.plan_id, offer_code: request.offer_code },
-    })
+    } as never)
     .select()
     .single();
   
@@ -92,62 +100,50 @@ export async function processRecharge(
     };
   }
   
+  const txRow = transaction as unknown as TransactionRow;
+  
   // Step 3: Lock amount in wallet
-  const locked = await walletService.lockAmount(userId, request.amount, transaction.id);
+  const locked = await walletService.lockAmount(userId, request.amount, txRow.id);
   if (!locked) {
-    // Update transaction as failed
-    await updateTransactionStatus(transaction.id, 'FAILED', 'Failed to lock wallet amount');
+    await updateTransactionStatus(txRow.id, 'FAILED', 'Failed to lock wallet amount');
     return {
       status: 'FAILED',
-      transaction_id: transaction.id,
+      transaction_id: txRow.id,
       message: 'Failed to lock wallet amount',
       data: null,
     };
   }
   
   // Step 4: Call Recharge API (placeholder)
-  const apiResponse = await processRechargeApi(request, transaction.id);
+  const apiResponse = await processRechargeApi(request, txRow.id);
   
   // Step 5: Handle response
   if (apiResponse.status === 'SUCCESS') {
-    // Confirm wallet debit
-    await walletService.confirmDebit(userId, request.amount, transaction.id);
-    await updateTransactionStatus(
-      transaction.id,
-      'SUCCESS',
-      apiResponse.message,
-      apiResponse.transaction_id
-    );
+    await walletService.confirmDebit(userId, request.amount, txRow.id);
+    await updateTransactionStatus(txRow.id, 'SUCCESS', apiResponse.message, apiResponse.transaction_id);
     
     return {
       status: 'SUCCESS',
-      transaction_id: transaction.id,
+      transaction_id: txRow.id,
       message: 'Recharge successful',
-      data: { ...transaction, status: 'SUCCESS' } as Transaction,
+      data: { ...txRow, status: 'SUCCESS' } as unknown as Transaction,
     };
   } else if (apiResponse.status === 'PENDING') {
-    // Keep amount locked, mark for polling
-    await updateTransactionStatus(
-      transaction.id,
-      'PENDING',
-      'Recharge is being processed',
-      apiResponse.transaction_id
-    );
+    await updateTransactionStatus(txRow.id, 'PENDING', 'Recharge is being processed', apiResponse.transaction_id);
     
     return {
       status: 'PENDING',
-      transaction_id: transaction.id,
+      transaction_id: txRow.id,
       message: 'Recharge is being processed. Please check status later.',
-      data: { ...transaction, status: 'PENDING' } as Transaction,
+      data: { ...txRow, status: 'PENDING' } as unknown as Transaction,
     };
   } else {
-    // Refund locked amount
-    await walletService.refundAmount(userId, request.amount, transaction.id);
-    await updateTransactionStatus(transaction.id, 'FAILED', apiResponse.message);
+    await walletService.refundAmount(userId, request.amount, txRow.id);
+    await updateTransactionStatus(txRow.id, 'FAILED', apiResponse.message);
     
     return {
       status: 'FAILED',
-      transaction_id: transaction.id,
+      transaction_id: txRow.id,
       message: apiResponse.message || 'Recharge failed',
       data: null,
     };
@@ -161,7 +157,6 @@ export async function processPostpaidBill(
   userId: string,
   billDetails: BillDetails
 ): Promise<ApiResponse<Transaction | null>> {
-  // Similar flow to recharge but for postpaid bills
   const wallet = await walletService.getWalletBalance(userId);
   if (!wallet || wallet.balance - wallet.locked_balance < billDetails.amount) {
     return {
@@ -172,9 +167,8 @@ export async function processPostpaidBill(
     };
   }
   
-  // Create transaction
   const { data: transaction, error } = await supabase
-    .from('transactions')
+    .from('transactions' as never)
     .insert({
       user_id: userId,
       type: 'BILL_PAYMENT',
@@ -184,7 +178,7 @@ export async function processPostpaidBill(
       operator_id: billDetails.operator_id,
       mobile_number: billDetails.mobile_number,
       reference_id: billDetails.bill_number,
-    })
+    } as never)
     .select()
     .single();
   
@@ -197,19 +191,19 @@ export async function processPostpaidBill(
     };
   }
   
-  // Lock and process
-  await walletService.lockAmount(userId, billDetails.amount, transaction.id);
+  const txRow = transaction as unknown as TransactionRow;
   
-  // TODO: Replace with real API call
-  // Simulating success for now
-  await walletService.confirmDebit(userId, billDetails.amount, transaction.id);
-  await updateTransactionStatus(transaction.id, 'SUCCESS', 'Bill paid successfully');
+  await walletService.lockAmount(userId, billDetails.amount, txRow.id);
+  
+  // TODO: Replace with real API call - simulating success for now
+  await walletService.confirmDebit(userId, billDetails.amount, txRow.id);
+  await updateTransactionStatus(txRow.id, 'SUCCESS', 'Bill paid successfully');
   
   return {
     status: 'SUCCESS',
-    transaction_id: transaction.id,
+    transaction_id: txRow.id,
     message: 'Bill paid successfully',
-    data: { ...transaction, status: 'SUCCESS' } as Transaction,
+    data: { ...txRow, status: 'SUCCESS' } as unknown as Transaction,
   };
 }
 
@@ -221,11 +215,6 @@ export async function fetchBillDetails(
   mobileNumber: string
 ): Promise<ApiResponse<BillDetails | null>> {
   // TODO: Replace with real API call
-  // const response = await supabase.functions.invoke('fetch-bill', {
-  //   body: { operator_id: operatorId, mobile_number: mobileNumber }
-  // });
-  
-  // Mock response
   return {
     status: 'SUCCESS',
     transaction_id: '',
@@ -244,19 +233,12 @@ export async function fetchBillDetails(
 
 /**
  * PLACEHOLDER: Call external recharge API
- * 
- * Replace this function body when connecting to KwikApi.
- * The function signature should remain the same.
  */
 async function processRechargeApi(
   request: RechargeRequest,
   transactionId: string
 ): Promise<ApiResponse<{ api_ref: string }>> {
   // TODO: Replace with real API call via edge function
-  // const response = await supabase.functions.invoke('process-recharge', {
-  //   body: { ...request, transaction_id: transactionId }
-  // });
-  
   // Simulate random response for demo
   const random = Math.random();
   
@@ -303,8 +285,8 @@ async function updateTransactionStatus(
   }
   
   const { error } = await supabase
-    .from('transactions')
-    .update(updateData)
+    .from('transactions' as never)
+    .update(updateData as never)
     .eq('id', transactionId);
   
   if (error) {
@@ -321,7 +303,7 @@ export async function getTransactionHistory(
   serviceType?: string
 ): Promise<Transaction[]> {
   let query = supabase
-    .from('transactions')
+    .from('transactions' as never)
     .select('*')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
@@ -338,7 +320,7 @@ export async function getTransactionHistory(
     return [];
   }
   
-  return data as Transaction[];
+  return (data as unknown as Transaction[]) || [];
 }
 
 /**
@@ -348,7 +330,7 @@ export async function checkTransactionStatus(
   transactionId: string
 ): Promise<ApiResponse<Transaction | null>> {
   const { data, error } = await supabase
-    .from('transactions')
+    .from('transactions' as never)
     .select('*')
     .eq('id', transactionId)
     .single();
@@ -362,10 +344,12 @@ export async function checkTransactionStatus(
     };
   }
   
+  const tx = data as unknown as TransactionRow;
+  
   return {
-    status: data.status as 'SUCCESS' | 'FAILED' | 'PENDING',
+    status: tx.status as 'SUCCESS' | 'FAILED' | 'PENDING',
     transaction_id: transactionId,
-    message: `Transaction is ${data.status}`,
-    data: data as Transaction,
+    message: `Transaction is ${tx.status}`,
+    data: tx as unknown as Transaction,
   };
 }
